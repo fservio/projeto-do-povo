@@ -1,0 +1,13 @@
+import { Module } from '@nestjs/common';
+import { TagsController } from './tags.controller';
+import { TagsService } from './tags.service';
+import { PrismaService } from '../common/prisma.service';
+import { AuthModule } from '../auth/auth.module';
+
+@Module({
+  imports: [AuthModule],
+  controllers: [TagsController],
+  providers: [TagsService, PrismaService],
+  exports: [TagsService],
+})
+export class TagsModule {}

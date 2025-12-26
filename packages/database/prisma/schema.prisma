@@ -1,0 +1,804 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// SITES E MULTITENANCY
+// ============================================
+
+model Site {
+  id          String   @id @default(cuid())
+  slug        String   @unique // "portal" ou "diario"
+  name        String
+  domain      String   @unique
+  description String?
+  logo        String?
+  favicon     String?
+  settings    Json     @default("{}")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  articles       Article[]
+  categories     Category[]
+  homePages      HomePage[]
+  pdfEditions    PdfEdition[]
+  adSlots        AdSlot[]
+  redirects      Redirect[]
+  editorialRules EditorialRule[]
+
+  @@index([slug])
+  @@index([domain])
+  @@map("sites")
+}
+
+// ============================================
+// USUÁRIOS, ROLES E PERMISSÕES (RBAC)
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  username      String?   @unique
+  passwordHash  String
+  firstName     String
+  lastName      String
+  avatar        String?
+  bio           String?
+  active        Boolean   @default(true)
+  emailVerified DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relações
+  roles               UserRole[]
+  authorProfile       AuthorProfile?
+  createdArticles     Article[]             @relation("ArticleAuthor")
+  updatedArticles     Article[]             @relation("ArticleUpdater")
+  articleVersions     ArticleVersion[]
+  comments            Comment[]
+  moderationActions   ModerationAction[]
+  auditLogs           AuditLog[]
+  editorialChecklists EditorialChecklist[]
+  createdHomePages    HomePage[]
+  uploadedMedia       MediaAsset[]
+  sessions            Session[]
+
+  @@index([email])
+  @@index([username])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  level       Int      @default(0) // Hierarquia: SuperAdmin=100, Admin=90, Editor-chefe=80, etc
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@index([slug])
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  resource    String // "articles", "pages", "users", "media", etc
+  action      String // "create", "read", "update", "delete", "publish", "moderate"
+  description String?
+  createdAt   DateTime @default(now())
+
+  // Relações
+  roles RolePermission[]
+
+  @@unique([resource, action])
+  @@index([resource])
+  @@map("permissions")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+
+  // Relações
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  // Relações
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// ============================================
+// PERFIL DE AUTOR
+// ============================================
+
+model AuthorProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  displayName String
+  slug        String   @unique
+  bio         String?
+  avatar      String?
+  social      Json     @default("{}")
+  specialty   String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  articles Article[]
+
+  @@index([slug])
+  @@map("author_profiles")
+}
+
+// ============================================
+// CATEGORIAS E TAGS
+// ============================================
+
+model Category {
+  id          String   @id @default(cuid())
+  siteId      String
+  name        String
+  slug        String
+  description String?
+  parentId    String?
+  color       String?
+  icon        String?
+  order       Int      @default(0)
+  active      Boolean  @default(true)
+  seo         Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  site     Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+  articles Article[]
+
+  @@unique([siteId, slug])
+  @@index([siteId])
+  @@index([slug])
+  @@index([parentId])
+  @@map("categories")
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  articles ArticleTag[]
+
+  @@index([slug])
+  @@map("tags")
+}
+
+// ============================================
+// ARTIGOS E CONTEÚDO
+// ============================================
+
+enum ArticleType {
+  NEWS
+  ARTICLE
+  OPINION
+  COLUMN
+  INTERVIEW
+  SPECIAL
+  LIVE_BLOG
+  PAGE
+  SERVICE_PAGE
+}
+
+enum ArticleStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+  CORRECTION
+}
+
+model Article {
+  id          String        @id @default(cuid())
+  siteId      String
+  type        ArticleType   @default(NEWS)
+  status      ArticleStatus @default(DRAFT)
+  title       String
+  subtitle    String?
+  slug        String
+  excerpt     String?
+  content     String        @db.Text
+  featuredImage String?
+  
+  // Metadados editoriais
+  authorId      String
+  coAuthors     Json          @default("[]")
+  categoryId    String
+  sources       Json          @default("[]")
+  credits       String?
+  
+  // Workflow
+  lockedBy      String?
+  lockedAt      DateTime?
+  publishedAt   DateTime?
+  scheduledFor  DateTime?
+  expiresAt     DateTime?
+  
+  // SEO
+  seoTitle      String?
+  seoDescription String?
+  canonical     String?
+  noIndex       Boolean       @default(false)
+  openGraph     Json          @default("{}")
+  schema        Json          @default("{}")
+  
+  // Métricas
+  views         Int           @default(0)
+  shares        Int           @default(0)
+  
+  // Flags
+  featured      Boolean       @default(false)
+  breaking      Boolean       @default(false)
+  allowComments Boolean       @default(true)
+  isPremium     Boolean       @default(false)
+  
+  // Auditoria
+  createdBy     String
+  updatedBy     String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+
+  // Relações
+  site             Site                 @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  author           AuthorProfile        @relation(fields: [authorId], references: [id])
+  category         Category             @relation(fields: [categoryId], references: [id])
+  creator          User                 @relation("ArticleAuthor", fields: [createdBy], references: [id])
+  updater          User?                @relation("ArticleUpdater", fields: [updatedBy], references: [id])
+  tags             ArticleTag[]
+  versions         ArticleVersion[]
+  checklist        EditorialChecklist?
+  media            ArticleMedia[]
+  comments         Comment[]
+  relatedArticles  ArticleRelation[]    @relation("ArticleRelations")
+  relatedByArticles ArticleRelation[]   @relation("RelatedToArticles")
+  homeBlocks       HomeBlock[]
+
+  @@unique([siteId, slug])
+  @@index([siteId])
+  @@index([slug])
+  @@index([status])
+  @@index([authorId])
+  @@index([categoryId])
+  @@index([publishedAt])
+  @@index([createdAt])
+  @@map("articles")
+}
+
+model ArticleTag {
+  id        String   @id @default(cuid())
+  articleId String
+  tagId     String
+  createdAt DateTime @default(now())
+
+  // Relações
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, tagId])
+  @@index([articleId])
+  @@index([tagId])
+  @@map("article_tags")
+}
+
+model ArticleVersion {
+  id         String   @id @default(cuid())
+  articleId  String
+  version    Int
+  title      String
+  content    String   @db.Text
+  changes    Json     @default("{}")
+  reason     String?
+  createdBy  String
+  createdAt  DateTime @default(now())
+
+  // Relações
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  creator User    @relation(fields: [createdBy], references: [id])
+
+  @@unique([articleId, version])
+  @@index([articleId])
+  @@map("article_versions")
+}
+
+model ArticleRelation {
+  id              String   @id @default(cuid())
+  articleId       String
+  relatedArticleId String
+  type            String   @default("related") // "related", "series", "continued"
+  order           Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  // Relações
+  article        Article @relation("ArticleRelations", fields: [articleId], references: [id], onDelete: Cascade)
+  relatedArticle Article @relation("RelatedToArticles", fields: [relatedArticleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, relatedArticleId])
+  @@index([articleId])
+  @@index([relatedArticleId])
+  @@map("article_relations")
+}
+
+// ============================================
+// CHECKLIST EDITORIAL
+// ============================================
+
+model EditorialChecklist {
+  id        String   @id @default(cuid())
+  articleId String   @unique
+  
+  // Checks
+  hasFeaturedImage Boolean @default(false)
+  hasAltText       Boolean @default(false)
+  hasExcerpt       Boolean @default(false)
+  hasCategory      Boolean @default(false)
+  hasTags          Boolean @default(false)
+  hasSeoTitle      Boolean @default(false)
+  hasSeoDescription Boolean @default(false)
+  hasSources       Boolean @default(false)
+  hasCredits       Boolean @default(false)
+  spellChecked     Boolean @default(false)
+  factChecked      Boolean @default(false)
+  legalReviewed    Boolean @default(false)
+  
+  // Notas
+  notes     String?
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  article  Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  reviewer User?   @relation(fields: [reviewedBy], references: [id])
+
+  @@index([articleId])
+  @@map("editorial_checklists")
+}
+
+// ============================================
+// REGRAS EDITORIAIS POR SITE
+// ============================================
+
+model EditorialRule {
+  id            String   @id @default(cuid())
+  siteId        String
+  name          String
+  type          String // "workflow", "approval", "publishing"
+  config        Json
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relações
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId])
+  @@map("editorial_rules")
+}
+
+// ============================================
+// MÍDIA (DAM)
+// ============================================
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  OTHER
+}
+
+model MediaAsset {
+  id          String    @id @default(cuid())
+  type        MediaType
+  filename    String
+  originalName String
+  mimeType    String
+  size        Int
+  path        String
+  url         String
+  
+  // Metadados de imagem
+  width       Int?
+  height      Int?
+  thumbnails  Json      @default("{}")
+  
+  // Metadados editoriais
+  title       String?
+  alt         String?
+  caption     String?
+  credits     String?
+  copyright   String?
+  tags        Json      @default("[]")
+  folder      String?
+  
+  // Flags
+  public      Boolean   @default(true)
+  
+  // Auditoria
+  uploadedBy  String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  // Relações
+  uploader       User           @relation(fields: [uploadedBy], references: [id])
+  articleMedia   ArticleMedia[]
+
+  @@index([type])
+  @@index([folder])
+  @@index([uploadedBy])
+  @@map("media_assets")
+}
+
+model ArticleMedia {
+  id         String   @id @default(cuid())
+  articleId  String
+  mediaId    String
+  type       String   @default("inline") // "featured", "inline", "gallery"
+  order      Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  // Relações
+  article Article    @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  media   MediaAsset @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, mediaId, type])
+  @@index([articleId])
+  @@index([mediaId])
+  @@map("article_media")
+}
+
+// ============================================
+// HOME PAGE BUILDER
+// ============================================
+
+enum HomeLayout {
+  TOP_STORY_TWO_COLUMNS
+  MODULAR_GRID
+  MINIMALIST
+  MAGAZINE
+}
+
+model HomePage {
+  id          String     @id @default(cuid())
+  siteId      String
+  name        String
+  layout      HomeLayout @default(TOP_STORY_TWO_COLUMNS)
+  active      Boolean    @default(false)
+  scheduledFor DateTime?
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdBy   String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relações
+  site     Site          @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  creator  User          @relation(fields: [createdBy], references: [id])
+  sections HomeSection[]
+
+  @@index([siteId])
+  @@index([active])
+  @@map("home_pages")
+}
+
+model HomeSection {
+  id         String   @id @default(cuid())
+  homePageId String
+  name       String
+  order      Int      @default(0)
+  config     Json     @default("{}")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relações
+  homePage HomePage    @relation(fields: [homePageId], references: [id], onDelete: Cascade)
+  blocks   HomeBlock[]
+
+  @@index([homePageId])
+  @@index([order])
+  @@map("home_sections")
+}
+
+enum BlockType {
+  FEATURED_MAIN
+  FEATURED_SECONDARY
+  EDITORIAL_LIST
+  CAROUSEL
+  VIDEO
+  PODCAST
+  GALLERY
+  MOST_READ
+  NEWSLETTER
+  AGENDA
+  POLL
+  AD_SLOT
+  PDF_EDITION
+  CUSTOM
+}
+
+model HomeBlock {
+  id           String    @id @default(cuid())
+  sectionId    String
+  type         BlockType
+  title        String?
+  config       Json      @default("{}")
+  order        Int       @default(0)
+  
+  // Conteúdo
+  articleId    String?
+  contentType  String    @default("auto") // "manual", "auto", "hybrid"
+  contentRules Json      @default("{}")
+  
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relações
+  section HomeSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  article Article?    @relation(fields: [articleId], references: [id])
+
+  @@index([sectionId])
+  @@index([order])
+  @@map("home_blocks")
+}
+
+// ============================================
+// EDIÇÕES PDF (ISSUU)
+// ============================================
+
+model PdfEdition {
+  id              String    @id @default(cuid())
+  siteId          String
+  title           String
+  description     String?
+  editionDate     DateTime
+  coverImage      String?
+  issuuEmbedUrl   String?
+  issuuPublicationId String?
+  pdfUrl          String?
+  pageCount       Int?
+  active          Boolean   @default(true)
+  publishedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relações
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId])
+  @@index([editionDate])
+  @@index([active])
+  @@map("pdf_editions")
+}
+
+// ============================================
+// COMENTÁRIOS E MODERAÇÃO
+// ============================================
+
+enum CommentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SPAM
+  DELETED
+}
+
+model Comment {
+  id         String        @id @default(cuid())
+  articleId  String
+  userId     String?
+  authorName String?
+  authorEmail String?
+  content    String        @db.Text
+  status     CommentStatus @default(PENDING)
+  parentId   String?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  deletedAt  DateTime?
+
+  // Relações
+  article           Article            @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  user              User?              @relation(fields: [userId], references: [id])
+  parent            Comment?           @relation("CommentReplies", fields: [parentId], references: [id])
+  replies           Comment[]          @relation("CommentReplies")
+  moderationActions ModerationAction[]
+
+  @@index([articleId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("comments")
+}
+
+model ModerationAction {
+  id         String   @id @default(cuid())
+  commentId  String
+  moderatorId String
+  action     String // "approve", "reject", "spam", "delete"
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  // Relações
+  comment   Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  moderator User    @relation(fields: [moderatorId], references: [id])
+
+  @@index([commentId])
+  @@index([moderatorId])
+  @@map("moderation_actions")
+}
+
+// ============================================
+// PUBLICIDADE
+// ============================================
+
+model AdSlot {
+  id          String   @id @default(cuid())
+  siteId      String
+  name        String
+  slug        String
+  position    String // "header", "sidebar", "inline", "footer"
+  dimensions  String
+  deviceRules Json     @default("{}")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  site      Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  campaigns AdCampaign[]
+
+  @@unique([siteId, slug])
+  @@index([siteId])
+  @@index([active])
+  @@map("ad_slots")
+}
+
+model AdCampaign {
+  id          String    @id @default(cuid())
+  adSlotId    String
+  name        String
+  type        String // "image", "html", "script"
+  content     String    @db.Text
+  clickUrl    String?
+  impressions Int       @default(0)
+  clicks      Int       @default(0)
+  active      Boolean   @default(true)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relações
+  adSlot AdSlot @relation(fields: [adSlotId], references: [id], onDelete: Cascade)
+
+  @@index([adSlotId])
+  @@index([active])
+  @@map("ad_campaigns")
+}
+
+// ============================================
+// REDIRECTS (301/302)
+// ============================================
+
+model Redirect {
+  id          String   @id @default(cuid())
+  siteId      String
+  fromPath    String
+  toPath      String
+  statusCode  Int      @default(301)
+  active      Boolean  @default(true)
+  hitCount    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relações
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, fromPath])
+  @@index([siteId])
+  @@index([fromPath])
+  @@map("redirects")
+}
+
+// ============================================
+// SESSIONS (para Auth)
+// ============================================
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  token        String   @unique
+  refreshToken String?  @unique
+  expiresAt    DateTime
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relações
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+// ============================================
+// AUDIT LOG
+// ============================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  resource   String
+  resourceId String?
+  changes    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  // Relações
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([resource])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
